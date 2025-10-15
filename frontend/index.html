@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VietKichBan Web</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script defer src="config.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <h1>VietKichBan Web</h1>
+
+    <section class="card">
+      <h2>📝 Create Script</h2>
+      <label>Provider</label>
+      <select id="providerCreate">
+        <option value="gemini">Gemini</option>
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+      <label>Model</label>
+      <input id="modelCreate" value="gemini-2.0-pro" />
+      <label>Ý tưởng</label>
+      <textarea id="idea" placeholder="Nhập ý tưởng..."></textarea>
+      <label>Phong cách</label>
+      <input id="style" value="trung tính" />
+      <label>Số từ (ước lượng)</label>
+      <input id="length" type="number" value="800" />
+      <label>Ghi chú</label>
+      <textarea id="notes" placeholder="Ghi chú đặc biệt..."></textarea>
+      <button id="btnCreate">Generate</button>
+      <pre id="outCreate"></pre>
+    </section>
+
+    <section class="card">
+      <h2>🎙️ Podcast</h2>
+      <label>Provider</label>
+      <select id="providerPodcast">
+        <option value="gemini">Gemini</option>
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+      <label>Model</label>
+      <input id="modelPodcast" value="gemini-2.0-pro" />
+      <label>Chủ đề</label>
+      <input id="topic" placeholder="VD: Trung Thu" />
+      <label>Phong cách</label>
+      <input id="stylePodcast" value="Trò chuyện thân mật" />
+      <label>Nhân vật (tên:mô tả; mỗi dòng một cặp)</label>
+      <textarea id="characters" placeholder="Host:dẫn dắt&#10;Khách:chia sẻ..."></textarea>
+      <button id="btnPodcast">Generate</button>
+      <pre id="outPodcast"></pre>
+    </section>
+
+    <section class="card">
+      <h2>✍️ Rewrite</h2>
+      <label>Provider</label>
+      <select id="providerRewrite">
+        <option value="gemini">Gemini</option>
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+      <label>Model</label>
+      <input id="modelRewrite" value="gemini-2.0-pro" />
+      <label>Text gốc</label>
+      <textarea id="textRewrite" placeholder="Dán nội dung cần viết lại..."></textarea>
+      <label>Tone</label>
+      <input id="tone" value="tự nhiên" />
+      <label>Mục tiêu</label>
+      <input id="target" value="ngắn gọn, dễ hiểu" />
+      <button id="btnRewrite">Generate</button>
+      <pre id="outRewrite"></pre>
+    </section>
+  </main>
+</body>
+</html>

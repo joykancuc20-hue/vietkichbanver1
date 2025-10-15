@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+google-generativeai
+openai
+anthropic
+yt-dlp
+chromadb
+sentence-transformers
+python-dotenv
