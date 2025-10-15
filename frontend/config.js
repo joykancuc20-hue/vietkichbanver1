@@ -1,1 +1,1 @@
-window.CONFIG = { API_BASE: "https://<your-render-service>.onrender.com" };
+window.CONFIG = { API_BASE: "https://vietkichbanver1.onrender.com" };
