@@ -16,21 +16,19 @@ from core.utils import log_error
 # =======================
 app = FastAPI(title="VietKichBan Web API")
 
-# Phục vụ UI từ thư mục frontend/ (index.html, app.js, styles.css, config.js)
-app.mount("/app", StaticFiles(directory="frontend", html=True), name="app")
+# Dùng absolute path: /opt/render/project/src/frontend
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="app")
 
-# Trang gốc chuyển về UI
+# Trang gốc -> UI
 @app.get("/")
 def root():
     return RedirectResponse(url="/app/")
 
-# Health JSON (để debug / monitor)
+# Health JSON chuyển sang /health để đỡ đè /
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "routes": ["/api/create", "/api/podcast", "/api/rewrite", "/api/youtube/transcript", "/api/keys"]
-    }
+    return {"ok": True, "routes": ["/api/create","/api/podcast","/api/rewrite","/api/youtube/transcript","/api/keys"]}
 
 # =======================
 #  CONFIG + API KEY RR
