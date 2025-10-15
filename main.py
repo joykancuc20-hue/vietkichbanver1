@@ -7,6 +7,18 @@ from core.providers import Provider
 from core.workflows import OmegaLogic
 from core.youtube import get_transcript
 from core.utils import log_error
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
+
+# ... app = FastAPI(...) đã có ở trên
+
+# Phục vụ UI từ thư mục frontend/
+app.mount("/app", StaticFiles(directory="frontend", html=True), name="app")
+
+# Cho / tự chuyển vào UI (nếu muốn)
+@app.get("/")
+def root():
+    return RedirectResponse(url="/app/")
 
 app = FastAPI(title="VietKichBan Web API")
 
