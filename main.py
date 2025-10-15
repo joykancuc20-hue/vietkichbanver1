@@ -1,4 +1,7 @@
+# main.py
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import Dict, Any
 import os, json, threading, sys
@@ -7,21 +10,31 @@ from core.providers import Provider
 from core.workflows import OmegaLogic
 from core.youtube import get_transcript
 from core.utils import log_error
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
 
-# ... app = FastAPI(...) đã có ở trên
+# =======================
+#  APP + FRONTEND MOUNT
+# =======================
+app = FastAPI(title="VietKichBan Web API")
 
-# Phục vụ UI từ thư mục frontend/
+# Phục vụ UI từ thư mục frontend/ (index.html, app.js, styles.css, config.js)
 app.mount("/app", StaticFiles(directory="frontend", html=True), name="app")
 
-# Cho / tự chuyển vào UI (nếu muốn)
+# Trang gốc chuyển về UI
 @app.get("/")
 def root():
     return RedirectResponse(url="/app/")
 
-app = FastAPI(title="VietKichBan Web API")
+# Health JSON (để debug / monitor)
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "routes": ["/api/create", "/api/podcast", "/api/rewrite", "/api/youtube/transcript", "/api/keys"]
+    }
 
+# =======================
+#  CONFIG + API KEY RR
+# =======================
 CONFIG_PATH = "config.json"
 CONFIG_LOCK = threading.Lock()
 
@@ -38,13 +51,17 @@ def write_config(cfg: dict):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 def get_api_key(provider: str):
+    """
+    Lấy key theo round-robin từ config.json (BYOK).
+    Nếu không có -> fallback ENV (GEMINI_KEY / OPENAI_API_KEY / ANTHROPIC_KEY).
+    """
     cfg = read_config()
     api_keys = cfg.get("api_keys", {})
     last_idx = cfg.get("last_used_indices", {})
     provider = provider.lower().strip()
     keys = api_keys.get(provider, [])
     if not keys:
-        env_map = {"gemini":"GEMINI_KEY", "openai":"OPENAI_API_KEY", "anthropic":"ANTHROPIC_KEY"}
+        env_map = {"gemini": "GEMINI_KEY", "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_KEY"}
         return os.getenv(env_map.get(provider, ""), "")
     i = last_idx.get(provider, 0) % len(keys)
     key = keys[i]
@@ -54,6 +71,7 @@ def get_api_key(provider: str):
     return key
 
 def refresh_provider():
+    """Khởi tạo lại Provider + Logic khi thêm/xoá key."""
     global prov, logic
     prov = Provider(
         gemini_key=get_api_key("gemini"),
@@ -62,28 +80,30 @@ def refresh_provider():
     )
     logic = OmegaLogic(prov)
 
-# init
+# init ban đầu
 prov = None
 logic = None
 refresh_provider()
 
+# =======================
+#  SCHEMAS
+# =======================
 class GenReq(BaseModel):
-    provider: str = "gemini"
+    provider: str = "gemini"                # "gemini" | "openai" | "anthropic"
     model: str = "gemini-2.0-pro"
     params: Dict[str, Any]
 
 class KeyIn(BaseModel):
-    provider: str
+    provider: str                            # "gemini" | "openai" | "anthropic"
     api_key: str
 
 class YTReq(BaseModel):
     url: str
     lang: str = "vi"
 
-@app.get("/")
-def health():
-    return {"ok": True, "routes": ["/api/create","/api/podcast","/api/rewrite","/api/youtube/transcript","/api/keys"]}
-
+# =======================
+#  API: GENERATE
+# =======================
 @app.post("/api/create")
 def api_create(req: GenReq):
     try:
@@ -108,6 +128,9 @@ def api_rewrite(req: GenReq):
         log_error(sys.exc_info(), context="/api/rewrite")
         raise HTTPException(400, str(e))
 
+# =======================
+#  API: YouTube transcript
+# =======================
 @app.post("/api/youtube/transcript")
 def api_youtube(req: YTReq):
     try:
@@ -117,14 +140,16 @@ def api_youtube(req: YTReq):
         log_error(sys.exc_info(), context="/api/youtube/transcript")
         raise HTTPException(400, str(e))
 
-# ===== BYOK: người dùng tự thêm key =====
+# =======================
+#  API: BYOK (user tự thêm key)
+# =======================
 @app.get("/api/keys")
 def get_keys():
     cfg = read_config()
-    api_keys = cfg.get("api_keys", {"gemini":[],"openai":[],"anthropic":[]})
+    api_keys = cfg.get("api_keys", {"gemini": [], "openai": [], "anthropic": []})
     masked = {}
     for prov_name, arr in api_keys.items():
-        masked[prov_name] = [("****"+k[-4:]) if len(k)>=8 else "****" for k in arr]
+        masked[prov_name] = [("****" + k[-4:]) if len(k) >= 8 else "****" for k in arr]
     return {"keys": masked, "last_used_indices": cfg.get("last_used_indices", {})}
 
 @app.post("/api/keys")
@@ -132,13 +157,13 @@ def save_key(k: KeyIn):
     cfg = read_config()
     api_keys = cfg.get("api_keys", {})
     prov_name = k.provider.lower().strip()
-    if prov_name not in api_keys: 
+    if prov_name not in api_keys:
         api_keys[prov_name] = []
     if k.api_key and k.api_key not in api_keys[prov_name]:
         api_keys[prov_name].append(k.api_key)
     cfg["api_keys"] = api_keys
-    if "last_used_indices" not in cfg: 
-        cfg["last_used_indices"] = {"gemini":0,"openai":0,"anthropic":0}
+    if "last_used_indices" not in cfg:
+        cfg["last_used_indices"] = {"gemini": 0, "openai": 0, "anthropic": 0}
     write_config(cfg)
     refresh_provider()
     return {"ok": True}
