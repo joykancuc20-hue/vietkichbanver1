@@ -1,183 +1,208 @@
 # main.py
 from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Dict, Any
-import os, json, threading, sys
+import os, sys
 
-from core.providers import Provider
-from core.workflows import OmegaLogic
-from core.youtube import get_transcript
-from core.utils import log_error
+# ===== Providers =====
+import google.generativeai as genai
+from openai import OpenAI
+from anthropic import Anthropic
 
-# =======================
-#  APP + FRONTEND MOUNT
-# =======================
-app = FastAPI(title="VietKichBan Web API")
+def get_client(provider: str):
+    p = provider.lower().strip()
+    if p == "gemini":
+        key = os.getenv("GEMINI_KEY", "")
+        if not key: raise HTTPException(400, "Thiếu GEMINI_KEY")
+        genai.configure(api_key=key)
+        return "gemini"
+    if p == "openai":
+        key = os.getenv("OPENAI_API_KEY", "")
+        if not key: raise HTTPException(400, "Thiếu OPENAI_API_KEY")
+        return OpenAI(api_key=key)
+    if p == "anthropic":
+        key = os.getenv("ANTHROPIC_KEY", "")
+        if not key: raise HTTPException(400, "Thiếu ANTHROPIC_KEY")
+        return Anthropic(api_key=key)
+    raise HTTPException(400, "provider không hợp lệ")
 
-# Dùng absolute path: /opt/render/project/src/frontend
-FRONTEND_DIR = Path(__file__).parent / "frontend"
-app.mount("/app", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="app")
+def call_model(provider: str, model: str, prompt: str) -> str:
+    c = get_client(provider)
+    if c == "gemini":
+        m = genai.GenerativeModel(f"models/{model}")
+        return m.generate_content(prompt).text
+    if isinstance(c, OpenAI):
+        r = c.chat.completions.create(
+            model=model, messages=[{"role":"user","content":prompt}], temperature=0.8
+        )
+        return r.choices[0].message.content
+    if isinstance(c, Anthropic):
+        r = c.messages.create(
+            model=model, messages=[{"role":"user","content":prompt}], max_tokens=2048
+        )
+        return r.content[0].text
+    raise HTTPException(400, "Không gọi được model")
 
-# Trang gốc -> UI
-@app.get("/")
-def root():
-    return RedirectResponse(url="/app/")
+# ===== App =====
+app = FastAPI(title="VietKichBan — One-file")
 
-# Health JSON chuyển sang /health để đỡ đè /
-@app.get("/health")
-def health():
-    return {"ok": True, "routes": ["/api/create","/api/podcast","/api/rewrite","/api/youtube/transcript","/api/keys"]}
-
-# =======================
-#  CONFIG + API KEY RR
-# =======================
-CONFIG_PATH = "config.json"
-CONFIG_LOCK = threading.Lock()
-
-def read_config():
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def write_config(cfg: dict):
-    with CONFIG_LOCK:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-def get_api_key(provider: str):
-    """
-    Lấy key theo round-robin từ config.json (BYOK).
-    Nếu không có -> fallback ENV (GEMINI_KEY / OPENAI_API_KEY / ANTHROPIC_KEY).
-    """
-    cfg = read_config()
-    api_keys = cfg.get("api_keys", {})
-    last_idx = cfg.get("last_used_indices", {})
-    provider = provider.lower().strip()
-    keys = api_keys.get(provider, [])
-    if not keys:
-        env_map = {"gemini": "GEMINI_KEY", "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_KEY"}
-        return os.getenv(env_map.get(provider, ""), "")
-    i = last_idx.get(provider, 0) % len(keys)
-    key = keys[i]
-    last_idx[provider] = (i + 1) % len(keys)
-    cfg["last_used_indices"] = last_idx
-    write_config(cfg)
-    return key
-
-def refresh_provider():
-    """Khởi tạo lại Provider + Logic khi thêm/xoá key."""
-    global prov, logic
-    prov = Provider(
-        gemini_key=get_api_key("gemini"),
-        openai_key=get_api_key("openai"),
-        anthropic_key=get_api_key("anthropic"),
-    )
-    logic = OmegaLogic(prov)
-
-# init ban đầu
-prov = None
-logic = None
-refresh_provider()
-
-# =======================
-#  SCHEMAS
-# =======================
+# ===== Schemas =====
 class GenReq(BaseModel):
-    provider: str = "gemini"                # "gemini" | "openai" | "anthropic"
+    provider: str = "gemini"
     model: str = "gemini-2.0-pro"
     params: Dict[str, Any]
 
-class KeyIn(BaseModel):
-    provider: str                            # "gemini" | "openai" | "anthropic"
-    api_key: str
+# ===== Prompt builders (gọn) =====
+def build_create_prompt(p: Dict[str, Any]) -> str:
+    idea  = p.get("idea","")
+    style = p.get("style","trung tính")
+    words = int(p.get("length_words", 800))
+    notes = p.get("notes","")
+    return f"""Bạn là biên kịch chuyên nghiệp. Viết kịch bản tiếng Việt (~{words} từ), phong cách {style}.
+- Mạch có mở đầu/cao trào/kết
+- Lời thoại tự nhiên, rõ tên nhân vật
+Ý tưởng: {idea}
+Ghi chú: {notes}"""
 
-class YTReq(BaseModel):
-    url: str
-    lang: str = "vi"
+def build_podcast_prompt(p: Dict[str, Any]) -> str:
+    topic  = p.get("topic","")
+    style  = p.get("style","Trò chuyện thân mật")
+    chars  = p.get("characters",[["Host","dẫn dắt"],["Khách","chia sẻ"]])
+    roles  = "\n".join([f"- {n}: {d}" for n,d in chars])
+    return f"""Viết kịch bản podcast tiếng Việt (mở đầu/thân/kết), phong cách {style}.
+Chủ đề: {topic}
+Nhân vật:
+{roles}
+Lời thoại tự nhiên, có cue chuyển cảnh ngắn."""
 
-# =======================
-#  API: GENERATE
-# =======================
+def build_rewrite_prompt(p: Dict[str, Any]) -> str:
+    text   = p.get("text","")
+    tone   = p.get("tone","tự nhiên")
+    target = p.get("target","ngắn gọn, dễ hiểu")
+    return f"""Viết lại đoạn sau bằng tiếng Việt, giữ ý chính, giọng {tone}, mục tiêu {target}.
+---
+{text}
+---"""
+
+# ===== API routes =====
+@app.get("/health")
+def health():
+    return {"ok": True, "routes": ["/", "/api/create", "/api/podcast", "/api/rewrite"]}
+
 @app.post("/api/create")
 def api_create(req: GenReq):
     try:
-        return {"text": logic.create(req.provider, req.model, req.params)}
+        prompt = build_create_prompt(req.params)
+        return {"text": call_model(req.provider, req.model, prompt)}
+    except HTTPException:
+        raise
     except Exception as e:
-        log_error(sys.exc_info(), context="/api/create")
         raise HTTPException(400, str(e))
 
 @app.post("/api/podcast")
 def api_podcast(req: GenReq):
     try:
-        return {"text": logic.podcast(req.provider, req.model, req.params)}
+        prompt = build_podcast_prompt(req.params)
+        return {"text": call_model(req.provider, req.model, prompt)}
+    except HTTPException:
+        raise
     except Exception as e:
-        log_error(sys.exc_info(), context="/api/podcast")
         raise HTTPException(400, str(e))
 
 @app.post("/api/rewrite")
 def api_rewrite(req: GenReq):
     try:
-        return {"text": logic.rewrite(req.provider, req.model, req.params)}
+        prompt = build_rewrite_prompt(req.params)
+        return {"text": call_model(req.provider, req.model, prompt)}
+    except HTTPException:
+        raise
     except Exception as e:
-        log_error(sys.exc_info(), context="/api/rewrite")
         raise HTTPException(400, str(e))
 
-# =======================
-#  API: YouTube transcript
-# =======================
-@app.post("/api/youtube/transcript")
-def api_youtube(req: YTReq):
-    try:
-        text = get_transcript(req.url, req.lang)
-        return {"text": text}
-    except Exception as e:
-        log_error(sys.exc_info(), context="/api/youtube/transcript")
-        raise HTTPException(400, str(e))
+# ===== Inline Frontend (no files needed) =====
+HTML = """<!doctype html><html lang="vi"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VietKichBan Web</title>
+<style>
+:root { --bg:#0b0f19; --card:#121a2b; --bd:#1f2a44; --tx:#eaeefa; --btn:#4b7cf3 }
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--tx)}
+.wrap{max-width:980px;margin:32px auto;padding:0 16px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:16px;margin:16px 0}
+label{display:block;margin:.6rem 0 .25rem}
+input,textarea,select{width:100%;padding:.7rem;border-radius:12px;border:1px solid var(--bd);background:#0e1526;color:var(--tx)}
+textarea{min-height:120px} button{margin-top:.6rem;padding:.7rem 1rem;border:0;border-radius:12px;background:var(--btn);color:#fff;cursor:pointer}
+pre{white-space:pre-wrap;background:#0e1526;border:1px solid var(--bd);border-radius:12px;padding:.7rem;margin-top:.6rem}
+</style></head><body>
+<main class="wrap">
+  <h1>VietKichBan Web</h1>
 
-# =======================
-#  API: BYOK (user tự thêm key)
-# =======================
-@app.get("/api/keys")
-def get_keys():
-    cfg = read_config()
-    api_keys = cfg.get("api_keys", {"gemini": [], "openai": [], "anthropic": []})
-    masked = {}
-    for prov_name, arr in api_keys.items():
-        masked[prov_name] = [("****" + k[-4:]) if len(k) >= 8 else "****" for k in arr]
-    return {"keys": masked, "last_used_indices": cfg.get("last_used_indices", {})}
+  <section class="card">
+    <h2>📝 Create Script</h2>
+    <label>Provider</label>
+    <select id="prov1"><option value="gemini">Gemini</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select>
+    <label>Model</label><input id="mod1" value="gemini-2.0-pro"/>
+    <label>Ý tưởng</label><textarea id="idea"></textarea>
+    <label>Phong cách</label><input id="style" value="trung tính"/>
+    <label>Số từ</label><input id="len" type="number" value="800"/>
+    <label>Ghi chú</label><textarea id="notes"></textarea>
+    <button id="go1">Generate</button><pre id="out1"></pre>
+  </section>
 
-@app.post("/api/keys")
-def save_key(k: KeyIn):
-    cfg = read_config()
-    api_keys = cfg.get("api_keys", {})
-    prov_name = k.provider.lower().strip()
-    if prov_name not in api_keys:
-        api_keys[prov_name] = []
-    if k.api_key and k.api_key not in api_keys[prov_name]:
-        api_keys[prov_name].append(k.api_key)
-    cfg["api_keys"] = api_keys
-    if "last_used_indices" not in cfg:
-        cfg["last_used_indices"] = {"gemini": 0, "openai": 0, "anthropic": 0}
-    write_config(cfg)
-    refresh_provider()
-    return {"ok": True}
+  <section class="card">
+    <h2>🎙️ Podcast</h2>
+    <label>Provider</label>
+    <select id="prov2"><option value="gemini">Gemini</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select>
+    <label>Model</label><input id="mod2" value="gemini-2.0-pro"/>
+    <label>Chủ đề</label><input id="topic"/>
+    <label>Phong cách</label><input id="style2" value="Trò chuyện thân mật"/>
+    <label>Nhân vật (mỗi dòng: tên:mô tả)</label><textarea id="chars" placeholder="Host:dẫn dắt&#10;Khách:chia sẻ"></textarea>
+    <button id="go2">Generate</button><pre id="out2"></pre>
+  </section>
 
-@app.delete("/api/keys")
-def delete_key(provider: str, last4: str = ""):
-    cfg = read_config()
-    api_keys = cfg.get("api_keys", {})
-    prov_name = provider.lower().strip()
-    if prov_name not in api_keys:
-        return {"ok": True}
-    if last4:
-        api_keys[prov_name] = [k for k in api_keys[prov_name] if not k.endswith(last4)]
-    else:
-        api_keys[prov_name] = []
-    cfg["api_keys"] = api_keys
-    write_config(cfg)
-    refresh_provider()
-    return {"ok": True}
+  <section class="card">
+    <h2>✍️ Rewrite</h2>
+    <label>Provider</label>
+    <select id="prov3"><option value="gemini">Gemini</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select>
+    <label>Model</label><input id="mod3" value="gemini-2.0-pro"/>
+    <label>Text gốc</label><textarea id="text3"></textarea>
+    <label>Tone</label><input id="tone" value="tự nhiên"/>
+    <label>Mục tiêu</label><input id="target" value="ngắn gọn, dễ hiểu"/>
+    <button id="go3">Generate</button><pre id="out3"></pre>
+  </section>
+</main>
+<script>
+async function call(path, payload){
+  const res = await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  if(!res.ok){throw new Error(await res.text())}
+  return res.json();
+}
+document.getElementById("go1").onclick = async ()=>{
+  const body = {provider:prov1.value, model:mod1.value.trim(), params:{
+    idea:idea.value.trim(), style:style.value.trim(), length_words:+len.value||800, notes:notes.value.trim()
+  }};
+  out1.textContent="Đang xử lý..."; try{ const r = await call("/api/create", body); out1.textContent=r.text||JSON.stringify(r) }catch(e){ out1.textContent="Lỗi: "+e.message }
+};
+document.getElementById("go2").onclick = async ()=>{
+  const chars = charsEl.value.split("\\n").map(s=>s.trim()).filter(Boolean).map(l=>{const a=l.split(":");return [a[0]||"Host",(a.slice(1).join(":")||"").trim()]});
+  const body = {provider:prov2.value, model:mod2.value.trim(), params:{
+    topic:topic.value.trim(), style:style2.value.trim(), characters:chars
+  }};
+  out2.textContent="Đang xử lý..."; try{ const r = await call("/api/podcast", body); out2.textContent=r.text||JSON.stringify(r) }catch(e){ out2.textContent="Lỗi: "+e.message }
+};
+const charsEl = document.getElementById("chars");
+document.getElementById("go3").onclick = async ()=>{
+  const body = {provider:prov3.value, model:mod3.value.trim(), params:{
+    text:text3.value.trim(), tone:tone.value.trim(), target:target.value.trim()
+  }};
+  out3.textContent="Đang xử lý..."; try{ const r = await call("/api/rewrite", body); out3.textContent=r.text||JSON.stringify(r) }catch(e){ out3.textContent="Lỗi: "+e.message }
+};
+</script>
+</body></html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def ui():
+    return HTML
+
+# ===== END =====
